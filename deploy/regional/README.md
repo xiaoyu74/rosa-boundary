@@ -43,19 +43,23 @@ Terraform configuration for deploying ROSA Boundary container infrastructure on 
 
 ## Quick Start
 
+> **Run all `make` commands from the project root**, not from this directory.
+> The `deploy/regional/Makefile` sources `.env` from the project root and builds
+> Lambda dependencies before applying — running `terraform` directly skips both.
+
 ### 1. Setup Infrastructure
 
 ```bash
-# Copy the example configuration
-cp terraform.tfvars.example terraform.tfvars
+# Copy the example configuration (from project root)
+cp deploy/regional/terraform.tfvars.example deploy/regional/terraform.tfvars
 
-# Edit terraform.tfvars with your VPC ID, subnets, and container image
-vi terraform.tfvars
+# Edit with your VPC ID, subnets, and container image
+vi deploy/regional/terraform.tfvars
 
-# Initialize and apply Terraform
-terraform init
-terraform plan
-terraform apply
+# Initialize and apply Terraform (from project root)
+make -C deploy/regional init
+make -C deploy/regional plan
+make -C deploy/regional apply
 ```
 
 ### 2. Push Container Image to ECR
@@ -73,7 +77,7 @@ podman tag rosa-boundary:latest-amd64 YOUR_ACCOUNT_ID.dkr.ecr.us-east-2.amazonaw
 podman push YOUR_ACCOUNT_ID.dkr.ecr.us-east-2.amazonaws.com/rosa-boundary:latest
 
 # Update terraform.tfvars with ECR image URI and re-apply
-terraform apply
+make apply
 ```
 
 ### 3. Investigation Lifecycle Management
@@ -417,10 +421,10 @@ To destroy all resources:
 
 ```bash
 # Empty the S3 bucket first (WORM compliance prevents Terraform from deleting objects)
-aws s3 rm s3://$(terraform output -raw bucket_name) --recursive
+aws s3 rm s3://$(cd deploy/regional && terraform output -raw bucket_name) --recursive
 
-# Then destroy infrastructure
-terraform destroy
+# Then destroy infrastructure (from deploy/regional/)
+make destroy
 ```
 
 **Warning**: Objects in compliance mode cannot be deleted until retention expires. You may need to wait or contact AWS support to delete the bucket.

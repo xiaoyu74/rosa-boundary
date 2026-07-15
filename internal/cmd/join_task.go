@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/spf13/cobra"
@@ -86,6 +87,14 @@ func runJoinWithClient(ctx context.Context, ecsClient *awsclient.ECSClient, regi
 		if err := ecsClient.WaitForRunning(ctx, taskID); err != nil {
 			return fmt.Errorf("task did not reach RUNNING state: %w", err)
 		}
+	}
+
+	// Poll until the container's ECS exec agent is RUNNING before opening the
+	// SSM session — the data channel is closed immediately if the agent hasn't
+	// registered yet. Typically ready within 1-3 s; timeout after 30 s.
+	output.Status("Waiting for container exec agent...")
+	if err := ecsClient.WaitForExecAgent(ctx, taskID, container, 30*time.Second); err != nil {
+		return fmt.Errorf("exec agent not ready: %w", err)
 	}
 
 	// Start ECS Exec session
