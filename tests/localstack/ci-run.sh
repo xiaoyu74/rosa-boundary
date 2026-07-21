@@ -86,14 +86,14 @@ if ! CONTAINER_ID=$(podman run -d \
   --user root \
   -p 4566:4566 \
   --volume "${PODMAN_SOCK}:/var/run/docker.sock:z" \
-  -e LOCALSTACK_AUTH_TOKEN="${LOCALSTACK_AUTH_TOKEN}" \
+  -e LOCALSTACK_AUTH_TOKEN \
   -e SERVICES=s3,iam,lambda,logs,kms,sts,ec2,ecs,efs,ssm \
   -e LAMBDA_EXECUTOR=local \
   -e DEBUG=1 \
   -e AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}" \
   -e PERSISTENCE=0 \
   -e LOCALSTACK_LOG_DIR=/tmp/localstack-logs \
-  --volume "${SCRIPT_DIR}/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:z" \
+  --volume "${SCRIPT_DIR}/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro,z" \
   "${LOCALSTACK_IMAGE}"); then
     echo "ERROR: failed to start LocalStack container from ${LOCALSTACK_IMAGE}" >&2
     echo "  Possible causes: invalid LOCALSTACK_AUTH_TOKEN, stale 'localstack' container," >&2
@@ -102,12 +102,22 @@ if ! CONTAINER_ID=$(podman run -d \
 fi
 echo "LocalStack container started: ${CONTAINER_ID}"
 
-echo "Waiting for LocalStack ECS service (timeout: 180s)..."
+echo "Waiting for LocalStack services (timeout: 180s)..."
 TIMEOUT=180; elapsed=0
-until curl --silent --fail http://localhost:4566/_localstack/health 2>/dev/null | \
-    python3 -c "import sys,json; h=json.load(sys.stdin); exit(0 if h['services'].get('ecs') in ('available','running') else 1)" 2>/dev/null; do
+while true; do
   [ $elapsed -ge $TIMEOUT ] && { echo "ERROR: LocalStack did not become ready"; exit 1; }
-  health=$(curl --silent --fail http://localhost:4566/_localstack/health 2>/dev/null || echo '(no response)')
+  if curl --silent --fail --connect-timeout 5 --max-time 10 http://localhost:4566/_localstack/health 2>/dev/null | \
+      python3 -c "
+import sys, json
+h = json.load(sys.stdin)
+svcs = h.get('services', {})
+required = ['s3', 'iam', 'lambda', 'ecs', 'efs', 'kms']
+not_ready = [s for s in required if svcs.get(s) not in ('available', 'running')]
+sys.exit(1 if not_ready else 0)
+" 2>/dev/null; then
+    break
+  fi
+  health=$(curl --silent --fail --connect-timeout 5 --max-time 10 http://localhost:4566/_localstack/health 2>/dev/null || echo '(no response)')
   printf "  waiting... (%ds) health=%s\n" "$elapsed" "$health"
   sleep 5; elapsed=$((elapsed + 5))
 done
@@ -116,3 +126,19 @@ echo "LocalStack ready."
 cd "${SCRIPT_DIR}"
 echo "Running: pytest integration/ -v --tb=short --junit-xml=${ARTIFACT_DIR}/junit_localstack.xml"
 pytest integration/ -v --tb=short --junit-xml="${ARTIFACT_DIR}/junit_localstack.xml"
+
+# Guard against a silent-success run where all tests are skipped due to a
+# service outage — pytest exits 0 even when everything is skipped.
+python3 <<EOF
+import xml.etree.ElementTree as ET, sys
+tree = ET.parse("${ARTIFACT_DIR}/junit_localstack.xml")
+root = tree.getroot()
+suite = root if root.tag == 'testsuite' else root.find('testsuite')
+total = int(suite.get('tests', 0))
+skipped = int(suite.get('skipped', 0))
+ran = total - skipped
+if ran == 0:
+    print(f'ERROR: 0/{total} tests ran ({skipped} skipped) — possible service outage or suite misconfiguration', file=sys.stderr)
+    sys.exit(1)
+print(f'Test gate passed: {ran}/{total} tests ran ({skipped} skipped)')
+EOF
